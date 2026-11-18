@@ -1,0 +1,12 @@
+# Packaging archives
+*.zip
+
+# Local build scripts
+*.ps1
+
+# System & editor files
+.DS_Store
+Thumbs.db
+*.log
+.vscode/
+.idea/

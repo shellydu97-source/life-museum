@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>人生博物馆 2.2 · Life Museum</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=ZCOOL+XiaoWei&display=swap" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<canvas id="sky"></canvas>
+
+<nav class="nav" id="nav" style="display:none">
+  <div class="brand title-font" onclick="go('entrance')">🏛️ 人生博物馆</div>
+  <div class="tabs">
+    <div class="tab" data-v="explore" onclick="go('explore')">🏛️ 逛展</div>
+    <div class="tab" data-v="studio" id="tab-studio" onclick="go('studio')">✍️ 收藏</div>
+    <div class="tab" data-v="stars" onclick="go('stars')">🌌 星座图</div>
+    <div class="tab" data-v="me" id="tab-me" onclick="go('me')">⚙️ 我的</div>
+  </div>
+  <div class="nav-r">
+    <button class="btn" id="btn-search" onclick="go('search')">🔍 搜索</button>
+    <button class="btn btn-primary" id="btn-add" onclick="quickAdd()">＋ 收藏回忆</button>
+    <button class="btn" id="btn-share" onclick="openShareModal()">🔗 分享</button>
+    <button class="btn" id="btn-visitor" onclick="toggleVisitor()">👁 访客视角</button>
+  </div>
+</nav>
+
+<main id="view"></main>
+<div id="modal"></div>
+<div id="toast"></div>
+<div id="visitor-bar" class="visitor-bar">👁 访客视角：独家记忆已隐藏 <button class="btn" onclick="toggleVisitor()">退出</button></div>
+
+<script src="js/data.js"></script>
+<script src="js/effects.js"></script>
+<script src="js/render-explore.js"></script>
+<script src="js/timeline.js"></script>
+<script src="js/editor.js"></script>
+<script src="js/constellation.js"></script>
+<script src="js/me.js"></script>
+<script src="js/cloud.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
