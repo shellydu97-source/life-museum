@@ -392,16 +392,20 @@ function renderAuthScreen(){
  }else if(m==='verify'){
   body=`<div class="prompt-banner" style="margin:8px 0 12px;text-align:left">
    📬 请到 <b>${esc(CLOUD.pendingEmail)}</b> 查收验证邮件<br>
-   <span class="hint">方式一：直接去邮箱点击邮件里的确认链接，就会自动进入博物馆；<br>方式二：如果邮件里有验证码，也可以直接填在下面验证（没收到请看一眼垃圾箱）。</span>
+   <span>打开邮件，点击「<b lang="en">Confirm email address</b>」即可验证邮箱并返回博物馆。</span><br>
+   <span class="hint">收件箱里没找到？也可以看看垃圾邮件文件夹。</span>
   </div>
-  <label class="lb">🔢 邮件验证码 <span class="hint">（若已点邮件里的链接，直接点下方「我已点击验证链接」）</span></label>
-  <input id="au-otp" type="text" maxlength="10" placeholder="输入邮件中的数字验证码（选填）" onkeydown="if(event.key==='Enter')cloudVerifyOtp('signup')">
-  <div class="btn-row" style="margin-top:14px">
-   <button type="button" id="au-verify" class="btn btn-primary" style="flex:1;justify-content:center" onclick="cloudVerifyOtp('signup')">✓ 验证码确认</button>
-   <button type="button" class="btn" style="flex:1;justify-content:center" onclick="switchAuthMode('login')">🔑 我已点邮件链接，去登录</button>
+  <div class="btn-row center" style="margin-top:14px">
+   <button type="button" class="btn btn-primary" onclick="switchAuthMode('login')">我已验证，去登录</button>
+   <button type="button" id="au-resend" class="btn" onclick="cloudResendEmail()">重新发送验证邮件</button>
   </div>
-  <div class="btn-row" style="justify-content:space-between;margin-top:8px">
-   <button type="button" id="au-resend" class="btn sm" onclick="cloudResendEmail()">🔄 重新发送验证邮件</button>
+  <details style="margin-top:16px">
+   <summary>邮件里有数字验证码？</summary>
+   <label class="lb" for="au-otp">邮件中的数字验证码</label>
+   <input id="au-otp" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="10" onkeydown="if(event.key==='Enter')cloudVerifyOtp('signup')">
+   <button type="button" id="au-verify" class="btn" style="margin-top:8px" onclick="cloudVerifyOtp('signup')">验证码确认</button>
+  </details>
+  <div class="btn-row center" style="margin-top:12px">
    <button type="button" class="btn sm" onclick="switchAuthMode('register')">← 换个邮箱</button>
   </div>`;
  }else if(m==='forgot'){
