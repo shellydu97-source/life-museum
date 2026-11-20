@@ -82,6 +82,8 @@ body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;color:
 /* ===== 表单 ===== */
 .setup{max-width:540px;width:100%;padding:40px 36px;text-align:left}
 .setup h1{text-align:center;font-size:32px;margin-bottom:8px}
+#au-status{margin:0;font-size:14px;line-height:1.5}
+#au-status:not(:empty){margin-top:12px}
 .lb{display:block;margin:18px 0 8px;font-size:14px;color:var(--sub)}
 input,textarea,select{width:100%;padding:12px 16px;border-radius:14px;border:1px solid var(--glass-b);background:rgba(255,255,255,.06);color:var(--text);font-size:15px;font-family:inherit;outline:none}
 input:focus,textarea:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(255,182,230,.2)}

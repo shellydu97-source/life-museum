@@ -99,7 +99,34 @@ document.addEventListener('focusin',e=>{
  if(S.profile)SETUP_AV=S.profile.avatar||'🌙';
 
  const cfg=typeof getCloudConfig==='function'?getCloudConfig():{enabled:false};
- const urlInfo=typeof parseUrlAuthAndShare==='function'?parseUrlAuthAndShare():{recovery:false,verified:false,share:''};
+ const urlInfo=typeof parseUrlAuthAndShare==='function'?parseUrlAuthAndShare():{};
+
+ /* 邮件回调先核实令牌所属账号，再保存会话或打开重置密码页面。 */
+ if(cfg.enabled&&(urlInfo.session||urlInfo.error)){
+  let message=urlInfo.error;
+  if(urlInfo.session){
+   $('view').textContent='正在确认邮件链接…';
+   try{
+    const user=await supaFetch('/auth/v1/user',{token:urlInfo.session.access_token});
+    if(!user||!user.id)throw new Error('无法确认邮箱账号');
+    saveSession({...urlInfo.session,user});
+    CLOUD.pendingEmail=user.email||'';
+   }catch(e){
+    message='无法确认这个邮件链接的登录状态。如果邮箱已验证，请直接登录。';
+   }
+  }
+  if(message){
+   CLOUD.authMode='login';UI.view='auth';
+   render();showAuthMessage(message);
+  }else if(urlInfo.recovery){
+   CLOUD.authMode='reset';UI.view='auth';
+   render();showAuthMessage('请设置你的新登录密码。');
+  }else{
+   toast('🎉 邮箱验证成功！欢迎来到你的人生博物馆');
+   await syncAfterLogin();
+  }
+  return;
+ }
 
  /* 1. 朋友点开分享链接（?share=xxx）：免登录直接进入只读访客参观模式 */
  if(urlInfo.share&&cfg.enabled){
@@ -123,20 +150,10 @@ document.addEventListener('focusin',e=>{
   }
  }
 
- /* 2. 点击邮件中的「重置密码」链接返回：直接打开设置新密码界面 */
- if(urlInfo.recovery&&cfg.enabled){
-  CLOUD.authMode='reset';
-  UI.view='auth';
-  render();
-  toast('🔐 请设置你的新登录密码');
-  return;
- }
-
- /* 3. 云端模式已启用：检查登录状态，已登录则自动拉取云端数据，未登录则显示登录/注册页 */
+ /* 2. 云端模式已启用：检查登录状态，已登录则自动拉取云端数据，未登录则显示登录/注册页 */
  if(cfg.enabled){
   loadSavedSession();
   if(await ensureValidSession()){
-   if(urlInfo.verified)toast('🎉 邮箱验证成功！欢迎来到你的人生博物馆');
    await syncAfterLogin();
    return;
   }
@@ -145,7 +162,7 @@ document.addEventListener('focusin',e=>{
   return;
  }
 
- /* 4. 本地独立运行模式（未配置云端时完全兼容原有单机体验） */
+ /* 3. 本地独立运行模式（未配置云端时完全兼容原有单机体验） */
  UI.view=S.profile?'entrance':'setup';
  render();
  if(first&&S.exhibits.length)setTimeout(()=>toast('✨ 已升级到 2.2，'+S.exhibits.length+' 段回忆都在'),900);

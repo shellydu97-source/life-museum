@@ -91,24 +91,38 @@ async function supaFetch(path,opts={}){
  const headers={'apikey':cfg.anonKey,'Content-Type':'application/json',...(opts.headers||{})};
  if(opts.token)headers['Authorization']='Bearer '+opts.token;
  else if(CLOUD.session&&CLOUD.session.access_token&&opts.useAuth!==false)headers['Authorization']='Bearer '+CLOUD.session.access_token;
- const res=await fetch(cfg.url+path,{method:opts.method||'GET',headers,body:opts.body?JSON.stringify(opts.body):undefined});
+ const timeoutMs=opts.timeoutMs||(path.startsWith('/auth/v1/')?20000:0);
+ const controller=timeoutMs?new AbortController():null;
+ const timer=controller&&setTimeout(()=>controller.abort(),timeoutMs);
+ let res,text;
+ try{
+  res=await fetch(cfg.url+path,{method:opts.method||'GET',headers,body:opts.body?JSON.stringify(opts.body):undefined,signal:controller?.signal});
+  text=await res.text();
+ }catch(e){
+  if(controller?.signal.aborted)throw new Error('连接超时，请检查网络后重试。如果刚刚请求了邮件，请先查收邮箱。');
+  if(e instanceof TypeError)throw new Error('暂时连不上云端服务，请检查网络后重试。');
+  throw e;
+ }finally{clearTimeout(timer)}
  let data=null;
- const text=await res.text();
  try{data=text?JSON.parse(text):null}catch(e){data=text}
  if(!res.ok){
   const msg=(data&&(data.msg||data.error_description||data.message||data.error))||('请求失败 ('+res.status+')');
-  throw new Error(translateSupaError(msg));
+  const error=new Error(translateSupaError(msg,data?.error_code));
+  error.code=data?.error_code;
+  throw error;
  }
  return data;
 }
 
-function translateSupaError(msg){
+function translateSupaError(msg,code){
  const s=String(msg||'');
+ if(code==='email_address_not_authorized')return '邮件服务暂时无法向这个地址发送邮件，请联系网站管理员。';
+ if(/Error sending (confirmation|recovery) email/i.test(s))return '邮件服务发送失败，请稍后再试。如果一直收不到，请联系网站管理员。';
  if(/Invalid login credentials/i.test(s))return '邮箱或密码不正确，请再检查一下';
  if(/Email not confirmed/i.test(s))return '这个邮箱还没完成验证哦，请先去邮箱点验证链接或输入验证码';
  if(/User already registered|already been registered/i.test(s))return '这个邮箱已经注册过了，请直接登录，或点「忘记密码」找回';
  if(/Password should be at least/i.test(s))return '密码至少需要 6 位字符';
- if(/rate limit|For security purposes/i.test(s))return '发送太频繁啦，请稍等 1 分钟再试';
+ if(/rate limit|For security purposes/i.test(s))return '请求次数已达限制，请稍后再试。如果已请求过邮件，请先查收邮箱。';
  if(/Token has expired or is invalid|otp_expired/i.test(s))return '验证码或链接已过期，请重新发送一次';
  if(/Unable to validate email address|invalid format/i.test(s))return '请输入正确的邮箱地址';
  return s;
@@ -156,38 +170,43 @@ async function ensureValidSession(){
 
 /* ---------- 检查 URL 中的邮件验证回调 / 密码重置回调 / 访客分享参数 ---------- */
 function parseUrlAuthAndShare(){
- const result={recovery:false,verified:false,share:''};
- try{
-  const url=new URL(location.href);
-  const share=url.searchParams.get('share')||url.searchParams.get('u')||'';
-  if(share)result.share=share.trim();
-  if(location.hash&&location.hash.length>1){
-   const hp=new URLSearchParams(location.hash.slice(1));
-   const accessToken=hp.get('access_token'),refreshToken=hp.get('refresh_token'),type=hp.get('type'),expiresIn=hp.get('expires_in');
-   if(accessToken){
-    saveSession({
-     access_token:accessToken,
-     refresh_token:refreshToken||'',
-     expires_in:Number(expiresIn)||3600,
-     user:CLOUD.user||{id:'pending',email:''}
-    });
-    history.replaceState(null,'',location.pathname+location.search);
-    if(type==='recovery')result.recovery=true;
-    else result.verified=true;
-   }
-  }
- }catch(e){}
+ const url=new URL(location.href),query=url.searchParams,hash=new URLSearchParams(url.hash.slice(1));
+ const result={recovery:false,session:null,error:'',share:(query.get('share')||query.get('u')||'').trim()};
+ const param=name=>hash.get(name)||query.get(name);
+ const authKeys=['access_token','refresh_token','error','error_code','error_description'];
+ if(!authKeys.some(key=>hash.has(key)||query.has(key)))return result;
+ if(param('error')||param('error_code')||param('error_description')){
+  result.error=/expired|invalid|already.used/i.test([param('error_code'),param('error_description')].join(' '))
+   ?'这个邮件链接已过期或已使用。已验证的邮箱可以直接登录，也可以重新申请邮件。'
+   :'邮件链接验证失败。请使用最新一封邮件里的链接，或返回登录。';
+ }else if(param('access_token')&&param('refresh_token')){
+  result.session={
+   access_token:param('access_token'),refresh_token:param('refresh_token'),
+   expires_in:Number(param('expires_in'))||3600
+  };
+  result.recovery=param('type')==='recovery';
+ }else{
+  result.error='邮件链接不完整。请从最新一封邮件重新打开完整链接，或尝试登录。';
+ }
+ const keys=[...authKeys,'expires_in','expires_at','token_type','type'];
+ for(const params of [query,hash]){
+  if(!authKeys.some(key=>params.has(key)))continue;
+  for(const key of keys)params.delete(key);
+  if(params===hash)url.hash=params.toString();
+ }
+ try{history.replaceState(history.state,'',url.pathname+url.search+url.hash)}catch(e){}
  return result;
 }
 
 /* ---------- 云端读取与保存当前用户的博物馆 ---------- */
 async function fetchCloudMuseum(){
- if(!(await ensureValidSession())||!CLOUD.user)return null;
+ if(!(await ensureValidSession())||!CLOUD.user)throw new Error('登录已过期，请重新登录。');
  if(!CLOUD.user.id||CLOUD.user.id==='pending'){
   const u=await supaFetch('/auth/v1/user');
-  if(u&&u.id){CLOUD.user=u;CLOUD.session.user=u;saveSession(CLOUD.session)}
+  if(!u||!u.id)throw new Error('无法确认账号');
+  CLOUD.session.user=u;saveSession(CLOUD.session);
  }
- const rows=await supaFetch(`/rest/v1/museums?user_id=eq.${encodeURIComponent(CLOUD.user.id)}&select=user_id,share_id,is_public,owner_data,updated_at`);
+ const rows=await supaFetch(`/rest/v1/museums?user_id=eq.${encodeURIComponent(CLOUD.user.id)}&select=user_id,share_id,is_public,owner_data,updated_at`,{timeoutMs:30000});
  return Array.isArray(rows)&&rows[0]?rows[0]:null;
 }
 
@@ -261,6 +280,7 @@ async function syncAfterLogin(){
  if(!cfg.enabled||!CLOUD.user)return;
  CLOUD.pulling=true;
  CLOUD.syncState='syncing';updateCloudBadges();
+ let message='';
  try{
   const remote=await fetchCloudMuseum();
   const lastOwnerId=localStorage.getItem(OWNER_ID_KEY)||'';
@@ -300,10 +320,15 @@ async function syncAfterLogin(){
   UI.view=S.profile?'entrance':'setup';
  }catch(e){
   CLOUD.syncState='error';
+  UI.visitor=false;CLOUD.sharedMode=false;
+  saveSession(null);
+  CLOUD.authMode='login';UI.view='auth';
+  message='暂时无法读取这个账号的博物馆。请稍后重新登录。';
  }finally{
   CLOUD.pulling=false;
   updateCloudBadges();
   render();
+  if(message)showAuthMessage(message);
  }
 }
 
@@ -366,17 +391,17 @@ function renderAuthScreen(){
   </div>`;
  }else if(m==='verify'){
   body=`<div class="prompt-banner" style="margin:8px 0 12px;text-align:left">
-   📬 验证邮件已发送至 <b>${esc(CLOUD.pendingEmail)}</b><br>
+   📬 请到 <b>${esc(CLOUD.pendingEmail)}</b> 查收验证邮件<br>
    <span class="hint">方式一：直接去邮箱点击邮件里的确认链接，就会自动进入博物馆；<br>方式二：如果邮件里有验证码，也可以直接填在下面验证（没收到请看一眼垃圾箱）。</span>
   </div>
   <label class="lb">🔢 邮件验证码 <span class="hint">（若已点邮件里的链接，直接点下方「我已点击验证链接」）</span></label>
   <input id="au-otp" type="text" maxlength="10" placeholder="输入邮件中的数字验证码（选填）" onkeydown="if(event.key==='Enter')cloudVerifyOtp('signup')">
   <div class="btn-row" style="margin-top:14px">
-   <button type="button" class="btn btn-primary" style="flex:1;justify-content:center" onclick="cloudVerifyOtp('signup')">✓ 验证码确认</button>
+   <button type="button" id="au-verify" class="btn btn-primary" style="flex:1;justify-content:center" onclick="cloudVerifyOtp('signup')">✓ 验证码确认</button>
    <button type="button" class="btn" style="flex:1;justify-content:center" onclick="switchAuthMode('login')">🔑 我已点邮件链接，去登录</button>
   </div>
   <div class="btn-row" style="justify-content:space-between;margin-top:8px">
-   <button type="button" class="btn sm" onclick="cloudResendEmail()">🔄 重新发送验证邮件</button>
+   <button type="button" id="au-resend" class="btn sm" onclick="cloudResendEmail()">🔄 重新发送验证邮件</button>
    <button type="button" class="btn sm" onclick="switchAuthMode('register')">← 换个邮箱</button>
   </div>`;
  }else if(m==='forgot'){
@@ -410,6 +435,7 @@ function renderAuthScreen(){
   <h1 class="title-font glow">人生博物馆</h1>
   <p class="sub" style="text-align:center">每个人都有一座属于自己的记忆星空 ✨<br><span class="hint">云端加密保存 · 手机电脑随时同步 · 可一键分享给朋友参观</span></p>
   ${body}
+  <p id="au-status" role="status" aria-live="polite" aria-atomic="true"></p>
  </div></div>`;
 }
 
@@ -426,37 +452,72 @@ function enterOfflineMode(){
 }
 
 /* ---------- 登录 / 注册 / 验证 / 找回密码动作 ---------- */
+function showAuthMessage(message){
+ const status=$('au-status');
+ if(status)status.textContent=message;
+}
+
+// 禁用按钮和回车重复提交。用户离开表单后，旧请求不再改动新页面。
+async function submitAuthRequest(buttonId,busyText,action){
+ const btn=$(buttonId);
+ if(!btn||btn.disabled)return;
+ const label=btn.textContent;
+ btn.disabled=true;
+ btn.textContent=busyText;
+ showAuthMessage(busyText);
+ try{
+  await action(btn);
+ }catch(e){
+  if(btn.isConnected)showAuthMessage(e.message);
+ }finally{
+  if(btn.isConnected){btn.disabled=false;btn.textContent=label}
+ }
+}
+
+function authEmailPath(endpoint){
+ // 直接打开本地 HTML 时，邮件仍需返回可访问的网站。
+ const redirect=/^https?:$/.test(location.protocol)?location.origin+location.pathname:'https://life-museum-bwo.pages.dev/';
+ return endpoint+'?redirect_to='+encodeURIComponent(redirect);
+}
+
 async function cloudLogin(){
  const email=val('au-email').trim(),password=val('au-pass');
- if(!email){toast('请输入邮箱地址');return}
- if(!password){toast('请输入密码');return}
+ if(!email){showAuthMessage('请输入邮箱地址');return}
+ if(!password){showAuthMessage('请输入密码');return}
  CLOUD.pendingEmail=email;
- const btn=$('au-btn');if(btn)btn.disabled=true;
- try{
-  const res=await supaFetch('/auth/v1/token?grant_type=password',{
-   method:'POST',useAuth:false,body:{email,password}
-  });
-  saveSession(res);
+ await submitAuthRequest('au-btn','正在登录…',async btn=>{
+  let session;
+  try{
+   session=await supaFetch('/auth/v1/token?grant_type=password',{
+    method:'POST',useAuth:false,body:{email,password}
+   });
+  }catch(e){
+   if(!btn.isConnected)return;
+   if(e.code!=='email_not_confirmed'&&!/还没完成验证/.test(e.message))throw e;
+   CLOUD.pendingEmail=email;
+   CLOUD.authMode='verify';render();
+   showAuthMessage(e.message);
+   return;
+  }
+  if(!btn.isConnected)return;
+  saveSession(session);
   toast('✨ 欢迎回来，正在同步你的博物馆…');
   await syncAfterLogin();
- }catch(e){
-  toast('⚠️ '+e.message);
-  if(/还没完成验证/.test(e.message)){CLOUD.authMode='verify';render()}
- }finally{if(btn&&btn.isConnected)btn.disabled=false}
+ });
 }
 
 async function cloudRegister(){
  const email=val('au-email').trim(),password=val('au-pass'),pass2=val('au-pass2');
- if(!email||!email.includes('@')){toast('请输入正确的邮箱地址');return}
- if(!password||password.length<6){toast('密码至少需要 6 位哦');return}
- if(password!==pass2){toast('两次输入的密码不一致，请检查一下');return}
+ if(!email||!$('au-email').validity.valid){showAuthMessage('请输入正确的邮箱地址');return}
+ if(!password||password.length<6){showAuthMessage('密码至少需要 6 位哦');return}
+ if(password!==pass2){showAuthMessage('两次输入的密码不一致，请检查一下');return}
  CLOUD.pendingEmail=email;
- const btn=$('au-btn');if(btn)btn.disabled=true;
- try{
-  const redirectTo=location.origin+location.pathname;
-  const res=await supaFetch('/auth/v1/signup',{
-   method:'POST',useAuth:false,body:{email,password,options:{emailRedirectTo:redirectTo},gotrue_meta_security:{}}
+ await submitAuthRequest('au-btn','正在发送验证邮件…',async btn=>{
+  const res=await supaFetch(authEmailPath('/auth/v1/signup'),{
+   method:'POST',useAuth:false,body:{email,password}
   });
+  if(!btn.isConnected)return;
+  CLOUD.pendingEmail=email;
   if(res&&res.access_token){
    saveSession(res);
    toast('🎉 注册成功！欢迎来到你的人生博物馆');
@@ -464,29 +525,19 @@ async function cloudRegister(){
   }else{
    CLOUD.authMode='verify';
    render();
-   toast('📬 验证邮件已发送，请去邮箱查收确认');
+   showAuthMessage('如果邮箱已注册并完成验证，可以直接登录。');
   }
- }catch(e){
-  toast('⚠️ '+e.message);
- }finally{if(btn&&btn.isConnected)btn.disabled=false}
+ });
 }
 
 async function cloudVerifyOtp(type='signup'){
  const token=val('au-otp').trim();
- if(!token){toast('请输入邮件里的验证码，或者直接去邮箱点击验证链接');return}
- try{
-  let res=null;
-  try{
-   res=await supaFetch('/auth/v1/verify',{
-    method:'POST',useAuth:false,body:{type,email:CLOUD.pendingEmail,token}
-   });
-  }catch(e1){
-   if(type==='signup'){
-    res=await supaFetch('/auth/v1/verify',{
-     method:'POST',useAuth:false,body:{type:'email',email:CLOUD.pendingEmail,token}
-    });
-   }else throw e1;
-  }
+ if(!token){showAuthMessage('请输入邮件里的验证码，或者直接去邮箱点击验证链接');return}
+ await submitAuthRequest('au-verify','正在验证…',async btn=>{
+  const res=await supaFetch('/auth/v1/verify',{
+   method:'POST',useAuth:false,body:{type:type==='signup'?'email':type,email:CLOUD.pendingEmail,token}
+  });
+  if(!btn.isConnected)return;
   if(res&&res.access_token){
    saveSession(res);
    toast('🎉 邮箱验证成功！正在进入你的博物馆…');
@@ -495,17 +546,17 @@ async function cloudVerifyOtp(type='signup'){
    toast('✓ 验证通过，请直接输入密码登录');
    switchAuthMode('login');
   }
- }catch(e){toast('⚠️ '+e.message)}
+ });
 }
 
 async function cloudResendEmail(){
- if(!CLOUD.pendingEmail){toast('请先填写你的邮箱');return}
- try{
-  await supaFetch('/auth/v1/resend',{
+ if(!CLOUD.pendingEmail){showAuthMessage('请先填写你的邮箱');return}
+ await submitAuthRequest('au-resend','正在重新发送…',async btn=>{
+  await supaFetch(authEmailPath('/auth/v1/resend'),{
    method:'POST',useAuth:false,body:{type:'signup',email:CLOUD.pendingEmail}
   });
-  toast('📬 验证邮件已重新发送，请查收邮箱（含垃圾箱）');
- }catch(e){toast('⚠️ '+e.message)}
+  if(btn.isConnected)showAuthMessage('验证邮件已重新请求，请查收收件箱和垃圾邮件文件夹。');
+ });
 }
 
 async function cloudSendRecovery(){
@@ -514,9 +565,8 @@ async function cloudSendRecovery(){
  CLOUD.pendingEmail=email;
  const btn=$('au-btn');if(btn)btn.disabled=true;
  try{
-  const redirectTo=location.origin+location.pathname;
-  await supaFetch('/auth/v1/recover?redirect_to='+encodeURIComponent(redirectTo),{
-   method:'POST',useAuth:false,body:{email,options:{emailRedirectTo:redirectTo}}
+  await supaFetch(authEmailPath('/auth/v1/recover'),{
+   method:'POST',useAuth:false,body:{email}
   });
   CLOUD.authMode='reset';
   render();
